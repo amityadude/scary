@@ -1,64 +1,46 @@
-# Dusklight Mod Template
+# Nightmare Lizalfos
 
-A standalone template for [Dusklight](https://github.com/TwilitRealm/dusklight) mods.
+A Dusklight mod that turns the Lizalfos into a relentless, near-perfect defender in the style of
+the Darknut: instant shield, ~99.5% block/dodge rate, pre-emptive arrow guard, faster and smarter
+chasing, no flinching. Built from the TwilitRealm mod template, pinned to the Lazy Tweaks fork.
 
-See the [Dusklight modding documentation](https://github.com/TwilitRealm/dusklight/blob/main/docs/modding.md)
-for the full mod API: services, hooking game functions, asset overlays, and more.
+## Build
 
-## Quick start
+    cmake -S . -B build -DDUSKLIGHT_DIR=<path to your kamilink7/dusklight checkout>
+    cmake --build build
 
-1. Click "Use this template" to create a new repository for your mod.
-2. Edit `mod.json.in`: set your mod's `id` (reverse-DNS style, e.g. `com.example.my_mod`),
-   `name`, `author`, and `description`.
-3. Rename the target in `CMakeLists.txt` (`add_mod(my_mod ...)`) (this names the `.dusk` file).
-4. Write your mod in `src/mod.cpp`.
-5. Build locally:
-   ```sh
-   cmake -B build
-   cmake --build build
-   ```
+The mod is `build/mods/nightmare_lizalfos.dusk`. Copy it into your Dusklight mods folder and enable it
+in the in-game mod manager. A locally built `.dusk` only works on the platform that built it; push
+this project to a GitHub repo made from the template to get all platforms from the included
+GitHub Action.
 
-The result is `build/mods/<name>.dusk`. Copy it into the game's mods folder to try it:
+If the build cannot find `res/Object/...` headers, make sure your checkout has `assets/GZ2E01`, and
+if it cannot find `dolphin/types.h`, run `git submodule update --init extern/aurora`.
 
-- Windows: `%APPDATA%\TwilitRealm\Dusklight\mods`
-- Linux: `~/.local/share/TwilitRealm/Dusklight/mods`
-- macOS: `~/Library/Application Support/TwilitRealm/Dusklight/mods`
+## Tuning
 
-During development, rebuild, copy and click **Reload** in the in-game mod manager to pick up changes.
+Every number is in `src/nl_brain.hpp`, block `namespace cfg`:
 
-> [!IMPORTANT]
-> A mod built locally will only be valid for your own platform, and shouldn't be distributed.
-> The repository will build a [cross-platform bundle](#github-actions) for distribution. See below.
+| Constant | Meaning |
+|---|---|
+| `LEAK_CHANCE` | chance one attack gets through (0.005 = 99.5% blocked). 0 = perfect, 0.05 = 95% |
+| `REACT_RANGE`, `AIM_RANGE`, `AIM_SHIELD_RANGE` | how far away it reacts to swings / aiming |
+| `RUN_SPEED`, `FAR_RUN_BONUS`, `ACCEL_*` | chase speed (original dash speed is 40) |
+| `ATTACK_CD_MIN/MAX`, `ATTACK_SPEED_MULT`, `RIPOSTE_CHANCE` | how often and how fast it attacks |
+| `DODGE_*`, `LEAP_*`, `ADVANCE_*` | dodge hop, gap-closing leap, shield-up advance |
+| `LEARN_MASK` | which of your attack types it always guards (bombs are left out on purpose) |
 
-## Updating to a new Dusklight version
+## Debugging
 
-Change the `DUSKLIGHT_VERSION` line in `CMakeLists.txt` to the new release tag (or commit hash) and reconfigure. The
-pinned version is fetched into `dusklight/` automatically. Use the `dusklight/` checkout to browse game code, headers
-and mod services.
+The first `DEBUG_LOG_LIMIT` decisions are written to the game log, e.g.
+`NL: attack cut=0x0A dist=312 -> DODGE (protected)` and `NL: state -> GUARD`.
+A `(LEAK: gets through)` line means that attack rolled the 0.5% and will hit.
 
-> [!IMPORTANT]
-> The Dusklight checkout is for **reference only**. Mods use
-> [services](https://github.com/TwilitRealm/dusklight/blob/main/docs/modding.md#built-in-services) and
-> [hooks](https://github.com/TwilitRealm/dusklight/blob/main/docs/modding.md#hooking-game-functions) to interact with
-> game code.
+## Offline tests (no game needed)
 
-## GitHub Actions
+    g++ -std=c++20 -O1 -Isrc tests/brain_test.cpp -o brain_test && ./brain_test
+    g++ -std=c++20 -O1 -DNL_TEST_LEAK_CHANCE=0.0f -Itests/mock -Isrc tests/sim_test.cpp -o sim && ./sim
 
-The included GitHub Actions workflow builds the mod for the following platforms:
-- Windows (AMD64 & ARM64)
-- macOS (Apple Silicon & Intel)
-- iOS (Apple Silicon)
-- Linux (x86_64 & aarch64)
-- Android (aarch64)
-
-It then merges the per-platform builds into a single `.dusk` supporting all platforms. (Artifact `mod-combined`) 
-
-Pushing a tag to the repository creates a GitHub release with the combined bundle.
-
-## For Dusklight developers
-
-Point the build at an existing checkout instead of fetching one:
-
-```sh
-cmake -B build -DDUSKLIGHT_DIR=~/path/to/dusklight
-```
+`sim_test.cpp` compiles the real `src/mod.cpp` against mock game headers and a simplified emulation of
+the original Lizalfos AI. It checks logic (no stuck states, protection windows, riposte, dodges, leak
+handling); it cannot check how anything looks or feels in the real game.

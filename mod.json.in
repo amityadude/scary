@@ -1,7 +1,7 @@
 {
-  "id": "com.example.my_mod",
-  "name": "My Mod",
+  "id": "com.kamilink.nightmare_lizalfos",
+  "name": "Nightmare Lizalfos",
   "version": "@PROJECT_VERSION@",
-  "author": "You",
-  "description": "An example Dusklight mod"
+  "author": "Kamilink",
+  "description": "Lizalfos become relentless Darknut-grade defenders: instant shield, near-perfect blocks and dodges, pre-emptive arrow guard, faster and smarter chasing, no flinching."
 }
