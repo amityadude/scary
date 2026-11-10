@@ -178,7 +178,9 @@ struct LinkInfo {
 };
 
 bool read_link(LinkInfo& out) {
-    daPy_py_c* py = daPy_getPlayerActorClass();
+    // Same as daPy_getPlayerActorClass(), spelled out: that helper calls dComIfGp_getPlayer(), an inline
+    // wrapper that the game's link stubs do not export (Windows/macOS/Android builds fail to link).
+    daPy_py_c* py = static_cast<daPy_py_c*>(g_dComIfG_gameInfo.play.getPlayer(0));
     if (py == nullptr) {
         return false;
     }
@@ -208,8 +210,9 @@ bool read_link(LinkInfo& out) {
 
 // ---- Small actor helpers ------------------------------------------------------------------
 void play_anim(e_dn_class* dn, int id, int attr, f32 morf, f32 rate, f32 start = 0.0f) {
-    dn->anm_p->setAnm(static_cast<J3DAnmTransform*>(dComIfG_getObjectRes("E_dn", id)), attr, morf,
-                      rate, start, -1.0f);
+    // Same as dComIfG_getObjectRes("E_dn", id), spelled out (that wrapper is not in the link stubs either).
+    dn->anm_p->setAnm(static_cast<J3DAnmTransform*>(g_dComIfG_gameInfo.mResControl.getObjectRes("E_dn", id)),
+                      attr, morf, rate, start, -1.0f);
     dn->anm_no = id;
 }
 
