@@ -74,6 +74,14 @@ inline constexpr float ADVANCE_STOP = 220.0f;
 inline constexpr int MIN_GUARD_HOLD = 4;
 inline constexpr int GUARD_MAX_HOLD = 150;
 
+// --- Parry window (like the Darknut) ---
+// If its attack hits your shield, or you shield-bash it while it attacks, it recoils and is
+// fully hittable for this many frames. No protection, no guard, nothing - go punish it.
+inline constexpr int PARRY_FRAMES = 20;
+inline constexpr int PARRY_COOLDOWN = 45;          // can't be parry-locked: immune this long afterwards
+inline constexpr float PARRY_BASH_RANGE = 350.0f;  // your shield bash counts as a parry inside this distance
+inline constexpr float PARRY_RECOIL_SPEED = -3.0f;   // small step back: it must stay inside your sword reach
+
 // --- Dodge ---
 inline constexpr int DODGE_FRAMES = 8;
 inline constexpr float DODGE_SPEED = 34.0f;
@@ -301,6 +309,7 @@ struct Threat {
 struct Decision {
     React want = React::None;
     bool protect = false;  // grant invulnerability this frame (a "successful" block/dodge)
+    bool arrow = false;    // an arrow / hook was just released and is still in flight
 };
 
 inline bool melee_active(const Threat& th, bool cutting) {
@@ -381,6 +390,7 @@ inline Decision observe(Threat& th, const LinkView& L, const Obs& o, Rng& rng) {
     if (aimActive && (o.dist > cfg::ATTACK_RANGE || shootRecent)) {
         d.want = React::Aim;
         d.protect = shootRecent && th.aimProtect;
+        d.arrow = shootRecent;
     }
     return d;
 }

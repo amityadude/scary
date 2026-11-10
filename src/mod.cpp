@@ -64,7 +64,7 @@ enum : s16 {
 };
 // Our own action ids. The original switch has no case for them, so the original AI does nothing
 // while we are in one - but it still runs damage checks, physics and collision every frame.
-enum : s16 { NA_GUARD = 100, NA_DODGE = 101, NA_PURSUE = 102 };
+enum : s16 { NA_GUARD = 100, NA_DODGE = 101, NA_PURSUE = 102, NA_PARRIED = 103 };
 
 enum : int { ANM_GUARD = 0x16, ANM_JUMP_B = 0x1C, ANM_RUN = 0x1E, ANM_WAIT_01 = 0x1F };
 
@@ -122,6 +122,8 @@ struct Ext {
     float nudgeZ = 0.0f;
     int leapCd = 0;
     int stuck = 0;
+    int parryT = 0;   // frames left in the parry window
+    int parryCd = 0;  // frames until it can be parried again
 
     // snapshot for the post-hook
     s16 preAction = -1;
@@ -293,8 +295,6 @@ void run_guard(const Ctx& c) {
     e_dn_class* dn = c.dn;
     Ext& e = *c.e;
     if (dn->mode == 0) {
-        // Snap straight to the held-shield pose: no blend, no hop, no wind-up.
-        play_anim(dn, ANM_GUARD, J3DFrameCtrl::EMode_NONE, 0.0f, 0.0f, 8.0f);
         dn->mode = 1;
         e.stateT = 0;
     }
@@ -304,14 +304,26 @@ void run_guard(const Ctx& c) {
     dn->actor.current.angle.y =
         nl::chase_angle(static_cast<int16_t>(dn->actor.current.angle.y), c.toLink, 1, nl::cfg::GUARD_TURN_STEP);
 
-    float target = 0.0f;
-    if (e.guardReason == React::Aim && c.dist > nl::cfg::ADVANCE_STOP) {
-        target = nl::cfg::ADVANCE_SPEED;  // shield-up advance
-        if (g_haveGake && LizGake::g_orig(dn, 120.0f, 0) != 0) {
-            target = 0.0f;  // ledge ahead: hold position
+    // While you aim at it from a distance it keeps closing in. It RUNS to do that (legs animate,
+    // shield hitbox on); the held-shield pose is used whenever it is standing still, and the moment
+    // an arrow is released. Never slide in the shield pose: the pose has no leg animation.
+    bool advance = e.guardReason == React::Aim && c.dist > nl::cfg::ADVANCE_STOP && !c.d.arrow;
+    if (advance && g_haveGake && LizGake::g_orig(dn, 120.0f, 0) != 0) {
+        advance = false;  // ledge ahead: hold position
+    }
+    if (advance) {
+        dn->actor.speedF = nl::approach(dn->actor.speedF, nl::cfg::ADVANCE_SPEED, 8.0f, 14.0f);
+        if (dn->anm_no != ANM_RUN) {
+            play_anim(dn, ANM_RUN, J3DFrameCtrl::EMode_LOOP, 4.0f, 1.0f);
+        }
+        dn->anm_p->setPlaySpeed(std::clamp(static_cast<float>(dn->actor.speedF) / 40.0f, 0.5f, 1.4f));
+    } else {
+        dn->actor.speedF = 0.0f;
+        if (dn->anm_no != ANM_GUARD) {
+            // Snap straight to the held-shield pose: no blend, no hop, no wind-up.
+            play_anim(dn, ANM_GUARD, J3DFrameCtrl::EMode_NONE, 0.0f, 0.0f, 8.0f);
         }
     }
-    dn->actor.speedF = nl::approach(dn->actor.speedF, target, 8.0f, 14.0f);
 
     if (c.d.want == React::Block || c.d.want == React::Dodge) {
         e.guardReason = React::Block;
@@ -319,6 +331,28 @@ void run_guard(const Ctx& c) {
     if ((c.d.want == React::None && e.stateT >= nl::cfg::MIN_GUARD_HOLD) ||
         e.stateT > nl::cfg::GUARD_MAX_HOLD) {
         finish_defense(c, e.guardReason == React::Block ? nl::cfg::RIPOSTE_CHANCE : 0.0f);
+    }
+}
+
+// Parried: it recoils with the original's hit-wobble and is completely open for a short window.
+void run_parried(const Ctx& c) {
+    e_dn_class* dn = c.dn;
+    Ext& e = *c.e;
+    if (dn->mode == 0) {
+        play_anim(dn, ANM_WAIT_01, J3DFrameCtrl::EMode_LOOP, 2.0f, 0.8f);
+        dn->field_0x74c = 150.0f;  // the original's flinch wobble, as a visible stagger
+        dn->actor.speedF = nl::cfg::PARRY_RECOIL_SPEED;
+        dn->mode = 1;
+        e.parryT = nl::cfg::PARRY_FRAMES;
+    }
+    --e.parryT;
+    dn->actor.current.angle.y =
+        nl::chase_angle(static_cast<int16_t>(dn->actor.current.angle.y), c.toLink, 2, 0x1000);
+    dn->actor.speedF = nl::approach(dn->actor.speedF, 0.0f, 3.0f, 3.0f);
+    if (e.parryT <= 0) {
+        e.parryCd = nl::cfg::PARRY_COOLDOWN;
+        dn->timer[2] = 8;
+        go_pursue(c);
     }
 }
 
@@ -488,7 +522,9 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
     // Always "learned": it already knows how to guard every one of your attack types, and
     // it never has the post-hit window where it could not guard.
     dn->learn |= static_cast<int>(nl::cfg::LEARN_MASK);
-    dn->field_0x74c = 0.0f;
+    if (dn->action != NA_PARRIED) {
+        dn->field_0x74c = 0.0f;
+    }
 
     // Full rage: an idle Lizalfos that can see this far goes straight for you, no roar.
     if (steer && (dn->action == A_NORMAL || dn->action == A_STAY || dn->action == A_OTOREAC)) {
@@ -503,10 +539,33 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
     nl::Obs obs;
     obs.dist = dist;
     obs.inAimCone = nl::abs_angle(nl::angle_diff(nl::angle_of(mx - L.x, mz - L.z), L.facing)) < nl::cfg::AIM_CONE;
-    const nl::Decision d = nl::observe(e.th, L.v, obs, g_rng);
+    nl::Decision d = nl::observe(e.th, L.v, obs, g_rng);
     if (e.th.newInstance) {
         dbg("NL: attack cut=0x{:02X} dist={:.0f} -> {} {}", static_cast<unsigned>(e.th.instCut), dist,
             e.th.meleeReact == React::Dodge ? "DODGE" : "BLOCK", e.th.leaked ? "(LEAK: gets through)" : "(protected)");
+    }
+
+    // Parry: its attack hit your shield, or you shield-bashed it mid-attack. It recoils and is
+    // wide open for PARRY_FRAMES. (The collision flags are last frame's, as the original reads them.)
+    if (steer) {
+        if (e.parryCd > 0) {
+            --e.parryCd;
+        }
+        if (e.parryCd == 0 && is_attack(dn->action)) {
+            const bool hitShield = L.v.guarding && dn->at_sph.ChkAtHit() != 0 && dn->at_sph.ChkAtShieldHit() != 0;
+            const bool bashed = L.v.cut == nl::cut::GUARD_ATTACK && dist < nl::cfg::PARRY_BASH_RANGE;
+            if (hitShield || bashed) {
+                dn->action = NA_PARRIED;
+                dn->mode = 0;
+                e.stateT = 0;
+                dbg("NL: PARRIED ({}) - open for {} frames", hitShield ? "its attack hit your shield" : "your shield bash",
+                    static_cast<int>(nl::cfg::PARRY_FRAMES));
+            }
+        }
+        if (dn->action == NA_PARRIED) {
+            d.want = React::None;     // no guard, no dodge, no protection while it is open
+            d.protect = false;
+        }
     }
 
     Ctx c{dn, &e, &L, dist, toLink, d};
@@ -562,6 +621,9 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
         case NA_PURSUE:
             run_pursue(c);
             break;
+        case NA_PARRIED:
+            run_parried(c);
+            break;
         default:
             break;
         }
@@ -579,7 +641,7 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
 
     if (dn->action != e.lastLoggedAction) {
         if (dn->action >= NA_GUARD) {
-            dbg("NL: state -> {}", dn->action == NA_GUARD ? "GUARD" : (dn->action == NA_DODGE ? "DODGE" : "PURSUE"));
+            dbg("NL: state -> {}", dn->action == NA_GUARD ? "GUARD" : (dn->action == NA_DODGE ? "DODGE" : (dn->action == NA_PARRIED ? "PARRIED" : "PURSUE")));
         }
         e.lastLoggedAction = dn->action;
     }
@@ -588,10 +650,8 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
 
 void revert_stagger(e_dn_class* dn, Ext& e) {
     // A hit landed (health already went down) but we refuse the flinch / knockdown / hookshot pull.
-    dn->action = A_FIGHT_RUN;
-    dn->mode = 0;
+    const bool parried = e.parryT > 0;
     dn->invulnerability_timer = 6;  // the normal short invulnerability after a hit
-    dn->field_0x74c = 0.0f;
     dn->field_0x708 = 0.0f;
     dn->field_0x704 = 0.0f;
     dn->field_0x70e = 0;
@@ -600,8 +660,19 @@ void revert_stagger(e_dn_class* dn, Ext& e) {
     if (dn->actor.speed.y > 12.0f) {
         dn->actor.speed.y = 0.0f;
     }
-    // Replace the knocked-back pose the original just started (it has not been drawn yet).
-    play_anim(dn, ANM_RUN, J3DFrameCtrl::EMode_LOOP, 2.0f, 1.0f);
+    if (parried) {
+        // Still inside the parry window: stay recoiled so you can keep hitting it.
+        dn->action = NA_PARRIED;
+        dn->mode = 1;
+        dn->field_0x74c = 150.0f;
+        play_anim(dn, ANM_WAIT_01, J3DFrameCtrl::EMode_LOOP, 2.0f, 0.8f);
+    } else {
+        dn->action = A_FIGHT_RUN;
+        dn->mode = 0;
+        dn->field_0x74c = 0.0f;
+        // Replace the knocked-back pose the original just started (it has not been drawn yet).
+        play_anim(dn, ANM_RUN, J3DFrameCtrl::EMode_LOOP, 2.0f, 1.0f);
+    }
     e.stateT = 0;
     dbg("NL: hit landed, flinch cancelled (health {})", static_cast<int>(dn->actor.health));
 }
