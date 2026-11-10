@@ -122,8 +122,10 @@ struct Ext {
     float nudgeZ = 0.0f;
     int leapCd = 0;
     int stuck = 0;
-    int parryT = 0;   // frames left in the parry window
+    int parryT = 0;   // frames left in the open window (parry or guard break)
+    int parryLen = nl::cfg::PARRY_FRAMES;  // how long the next window lasts
     int parryCd = 0;  // frames until it can be parried again
+    nl::Pressure pressure;
 
     // snapshot for the post-hook
     s16 preAction = -1;
@@ -343,7 +345,7 @@ void run_parried(const Ctx& c) {
         dn->field_0x74c = 150.0f;  // the original's flinch wobble, as a visible stagger
         dn->actor.speedF = nl::cfg::PARRY_RECOIL_SPEED;
         dn->mode = 1;
-        e.parryT = nl::cfg::PARRY_FRAMES;
+        e.parryT = e.parryLen;
     }
     --e.parryT;
     dn->actor.current.angle.y =
@@ -545,19 +547,37 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
             e.th.meleeReact == React::Dodge ? "DODGE" : "BLOCK", e.th.leaked ? "(LEAK: gets through)" : "(protected)");
     }
 
-    // Parry: its attack hit your shield, or you shield-bashed it mid-attack. It recoils and is
-    // wide open for PARRY_FRAMES. (The collision flags are last frame's, as the original reads them.)
+    // Open windows. Both put it into NA_PARRIED: wide open, no guard, no protection.
+    //  * Guard break: BREAK_COUNT of your attacks defended inside BREAK_WINDOW frames. The swing that
+    //    cracks it connects.
+    //  * Parry: its attack hit your shield, or you shield-bashed it mid-attack.
+    // (Collision flags are last frame's, as the original reads them.)
     if (steer) {
         if (e.parryCd > 0) {
             --e.parryCd;
         }
-        if (e.parryCd == 0 && is_attack(dn->action)) {
+        // Only swings aimed at THIS Lizalfos count: close, and facing it (spins hit all around you).
+        const bool aimedAtMe = obs.inAimCone || nl::is_spin(e.th.instCut);
+        if (e.th.newInstance && e.th.meleeProtect && dn->action != NA_PARRIED && dist < nl::cfg::PRESSURE_RANGE &&
+            aimedAtMe) {
+            const bool broke = nl::add_pressure(e.pressure, e.th.t);
+            dbg("NL: pressure {}/{}{}", broke ? static_cast<int>(nl::cfg::BREAK_COUNT) : e.pressure.count,
+                static_cast<int>(nl::cfg::BREAK_COUNT), broke ? " - GUARD BREAK" : "");
+            if (broke) {
+                dn->action = NA_PARRIED;
+                dn->mode = 0;
+                e.stateT = 0;
+                e.parryLen = nl::cfg::BREAK_FRAMES;
+            }
+        }
+        if (e.parryCd == 0 && dn->action != NA_PARRIED && is_attack(dn->action)) {
             const bool hitShield = L.v.guarding && dn->at_sph.ChkAtHit() != 0 && dn->at_sph.ChkAtShieldHit() != 0;
             const bool bashed = L.v.cut == nl::cut::GUARD_ATTACK && dist < nl::cfg::PARRY_BASH_RANGE;
             if (hitShield || bashed) {
                 dn->action = NA_PARRIED;
                 dn->mode = 0;
                 e.stateT = 0;
+                e.parryLen = nl::cfg::PARRY_FRAMES;
                 dbg("NL: PARRIED ({}) - open for {} frames", hitShield ? "its attack hit your shield" : "your shield bash",
                     static_cast<int>(nl::cfg::PARRY_FRAMES));
             }

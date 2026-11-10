@@ -82,6 +82,16 @@ inline constexpr int PARRY_COOLDOWN = 45;          // can't be parry-locked: imm
 inline constexpr float PARRY_BASH_RANGE = 350.0f;  // your shield bash counts as a parry inside this distance
 inline constexpr float PARRY_RECOIL_SPEED = -3.0f;   // small step back: it must stay inside your sword reach
 
+// --- Guard break (hidden pressure counter) ---
+// Every attack of yours that it successfully blocks or dodges adds one. If BREAK_COUNT of them land
+// inside BREAK_WINDOW frames, its guard cracks: same open window as a parry, and the swing that
+// cracked it connects. Back off for a moment and the older ones expire - no free bar to farm.
+inline constexpr int BREAK_COUNT = 6;
+inline constexpr int BREAK_WINDOW = 120;           // 4 seconds
+inline constexpr int BREAK_FRAMES = 30;            // how long it stays open once broken
+inline constexpr int BREAK_COOLDOWN = 75;          // after the open window, before it can be broken again
+inline constexpr float PRESSURE_RANGE = 450.0f;    // swings only count when you are this close
+
 // --- Dodge ---
 inline constexpr int DODGE_FRAMES = 8;
 inline constexpr float DODGE_SPEED = 34.0f;
@@ -92,7 +102,7 @@ inline constexpr float DODGE_HOP = 15.0f;
 inline constexpr uint32_t LEARN_MASK = 0xC0001FFFu;
 
 // Log the first N decisions to the game log so playtest reports are easy to read.
-inline constexpr int DEBUG_LOG_LIMIT = 150;
+inline constexpr int DEBUG_LOG_LIMIT = 300;
 
 }  // namespace cfg
 
@@ -264,6 +274,44 @@ inline int duration(uint8_t c) {
     default:
         return 20;
     }
+}
+
+// Spin attacks hit all around you, so they count as aimed at everything nearby.
+inline bool is_spin(uint8_t c) {
+    return c == cut::TURN_LEFT || c == cut::TURN_RIGHT || c == cut::LARGE_TURN_LEFT || c == cut::LARGE_TURN_RIGHT;
+}
+
+// ============================================================================================
+//  Guard break: counts defended attacks inside a sliding window
+// ============================================================================================
+struct Pressure {
+    int stamp[cfg::BREAK_COUNT] = {};
+    int count = 0;
+    int head = 0;
+    int ignoreUntil = -1;  // no counting while it is open / recovering
+};
+
+// Record one successfully defended attack at time `now` (frames). Returns true when this attack
+// cracks its guard (BREAK_COUNT defended attacks within BREAK_WINDOW frames).
+inline bool add_pressure(Pressure& p, int now) {
+    if (now <= p.ignoreUntil) {
+        return false;
+    }
+    p.stamp[p.head] = now;
+    p.head = (p.head + 1) % cfg::BREAK_COUNT;
+    if (p.count < cfg::BREAK_COUNT) {
+        ++p.count;
+    }
+    if (p.count == cfg::BREAK_COUNT) {
+        const int oldest = p.stamp[p.head];  // after the insert, head points at the oldest entry
+        if (now - oldest <= cfg::BREAK_WINDOW) {
+            p.count = 0;
+            p.head = 0;
+            p.ignoreUntil = now + cfg::BREAK_FRAMES + cfg::BREAK_COOLDOWN;
+            return true;
+        }
+    }
+    return false;
 }
 
 // ============================================================================================
