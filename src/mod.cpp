@@ -125,6 +125,9 @@ struct Ext {
     int parryT = 0;   // frames left in the open window (parry or guard break)
     int parryLen = nl::cfg::PARRY_FRAMES;  // how long the next window lasts
     int parryCd = 0;  // frames until it can be parried again
+    int recoverT = 0;  // frames left of an open recovery window (after an attack, dodge or leap)
+    s16 actPrev = -1;    // the action it was in when the previous frame's controller finished
+    s16 actEndPre = -1;  // our own bookkeeping: the action after this frame's controller ran
     nl::Pressure pressure;
 
     // snapshot for the post-hook
@@ -224,6 +227,17 @@ float fsin(int16_t a) { return std::sin(static_cast<float>(a) * (3.1415926535897
 float fcos(int16_t a) { return std::cos(static_cast<float>(a) * (3.14159265358979f / 32768.0f)); }
 
 bool is_attack(s16 a) { return a == A_ATTACK_0 || a == A_ATTACK || a == A_TAIL_ATTACK; }
+
+// True once an attack has reached its strike: from here it is committed and open to a counter.
+bool attack_committed(e_dn_class* dn) {
+    if (!is_attack(dn->action) || dn->mode < 1) {
+        return false;
+    }
+    const float strike = dn->action == A_ATTACK_0 ? nl::cfg::COMMIT_FRAME_ATTACK_0
+                         : dn->action == A_ATTACK ? nl::cfg::COMMIT_FRAME_ATTACK
+                                                  : nl::cfg::COMMIT_FRAME_TAIL;
+    return dn->anm_p->getFrame() >= strike;
+}
 
 // States the original code owns completely: we do not even look at them.
 bool frozen(s16 a) {
@@ -397,7 +411,10 @@ void run_dodge(const Ctx& c) {
 
     const bool landed = dn->objacch.ChkGroundHit() != 0;
     if (e.stateT >= nl::cfg::DODGE_FRAMES && (landed || e.stateT >= nl::cfg::DODGE_FRAMES + 10)) {
-        if (c.d.want != React::None) {
+        if (nl::cfg::OPENINGS) {
+            e.recoverT = nl::cfg::DODGE_RECOVERY;  // it just threw itself out of position: punish it
+        }
+        if (c.d.want != React::None && !nl::cfg::OPENINGS) {
             enter_guard(c, React::Block);  // the attack is still going: shield for the rest of it
         } else {
             finish_defense(c, nl::cfg::DODGE_RIPOSTE_CHANCE);
@@ -432,10 +449,13 @@ void run_pursue(const Ctx& c) {
         aim = static_cast<int16_t>(aim + static_cast<int>(std::sin(static_cast<float>(e.stateT) * nl::cfg::WEAVE_RATE) * nl::cfg::WEAVE_AMPL));
     }
 
+    const bool recovering = nl::cfg::OPENINGS && e.recoverT > 0;  // catching its breath: stands and faces you
+    const int turnStep = c.dist < nl::cfg::CLOSE_RANGE ? nl::cfg::CLOSE_TURN_STEP : nl::cfg::TURN_STEP;
     dn->actor.current.angle.y =
-        nl::chase_angle(static_cast<int16_t>(dn->actor.current.angle.y), aim, 2, nl::cfg::TURN_STEP);
+        nl::chase_angle(static_cast<int16_t>(dn->actor.current.angle.y), aim, 2, turnStep);
     const int16_t err = nl::angle_diff(aim, static_cast<int16_t>(dn->actor.current.angle.y));
-    dn->actor.speedF = nl::approach(dn->actor.speedF, nl::desired_speed(c.dist, err), nl::cfg::ACCEL_UP, nl::cfg::ACCEL_DOWN);
+    const float wantSpeed = recovering ? 0.0f : nl::desired_speed(c.dist, err);
+    dn->actor.speedF = nl::approach(dn->actor.speedF, wantSpeed, nl::cfg::ACCEL_UP, nl::cfg::ACCEL_DOWN);
 
     // Run while closing, plain stance while holding lunge distance.
     const bool wantRun = dn->actor.speedF > 5.0f || c.dist > nl::cfg::SPACING_INNER + 60.0f;
@@ -473,7 +493,7 @@ void run_pursue(const Ctx& c) {
     }
 
     // Gap closer: you back off, it leaps (original jump, aimed at you).
-    if (c.dist > nl::cfg::LEAP_MIN && c.dist < nl::cfg::LEAP_MAX && e.leapCd == 0 &&
+    if (!recovering && c.dist > nl::cfg::LEAP_MIN && c.dist < nl::cfg::LEAP_MAX && e.leapCd == 0 &&
         dn->objacch.ChkGroundHit() != 0 && g_rng.unit() < nl::cfg::LEAP_CHANCE) {
         e.leapCd = nl::cfg::LEAP_COOLDOWN;
         dn->actor.current.angle.y = c.toLink;
@@ -487,7 +507,7 @@ void run_pursue(const Ctx& c) {
     // Attack as soon as it is in range, facing you, and off cooldown. Holding your own shield
     // up for a long time earns you the tail sweep.
     const bool facing = nl::abs_angle(nl::angle_diff(c.toLink, static_cast<int16_t>(dn->actor.shape_angle.y))) < 0x3800;
-    if (c.dist < nl::cfg::ATTACK_RANGE && facing && dn->timer[2] == 0) {
+    if (!recovering && c.dist < nl::cfg::ATTACK_RANGE && facing && dn->timer[2] == 0) {
         start_attack(c, e.th.linkGuardFrames > nl::cfg::TURTLE_FRAMES);
     }
 }
@@ -500,7 +520,15 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
     }
     ++g_tick;
     Ext& e = ext_for(dn);
+    // Remember the action we leave it in, on every exit path. A recovery window only follows an attack
+    // that ran its course - not one that WE cancelled into a guard or a dodge.
+    struct EndGuard {
+        Ext& ext;
+        e_dn_class* actor;
+        ~EndGuard() { ext.actEndPre = actor->action; }
+    } endGuard{e, dn};
     e.managed = false;
+    e.actPrev = e.actEndPre;
     e.preAction = dn->action;
 
     // Scripted Lizalfos, dying Lizalfos, and states the original owns completely.
@@ -556,10 +584,28 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
         if (e.parryCd > 0) {
             --e.parryCd;
         }
+        // Openings: recovery after an attack, a dodge, or a leap landing.
+        if (nl::cfg::OPENINGS) {
+            if (e.recoverT > 0) {
+                --e.recoverT;
+            }
+            if (is_attack(e.actPrev) && !is_attack(dn->action) && dn->action != NA_PARRIED &&
+                dn->action != A_S_DAMAGE && dn->action != A_DAMAGE) {
+                e.recoverT = nl::cfg::ATTACK_RECOVERY;
+            } else if (e.actPrev == A_JUMP && dn->action != A_JUMP) {
+                e.recoverT = nl::cfg::LEAP_RECOVERY;
+            }
+        }
+        const bool inAttack = attack_committed(dn);
+        const bool recovering = nl::cfg::OPENINGS && e.recoverT > 0;
+        const bool behind = nl::cfg::OPENINGS &&
+                            nl::abs_angle(nl::angle_diff(toLink, static_cast<int16_t>(dn->actor.current.angle.y))) >
+                                nl::cfg::BEHIND_ANGLE;
+        const bool exposed = nl::cfg::OPENINGS && (inAttack || recovering || behind);
         // Only swings aimed at THIS Lizalfos count: close, and facing it (spins hit all around you).
         const bool aimedAtMe = obs.inAimCone || nl::is_spin(e.th.instCut);
-        if (e.th.newInstance && e.th.meleeProtect && dn->action != NA_PARRIED && dist < nl::cfg::PRESSURE_RANGE &&
-            aimedAtMe) {
+        if (e.th.newInstance && e.th.meleeProtect && !exposed && dn->action != NA_PARRIED &&
+            dist < nl::cfg::PRESSURE_RANGE && aimedAtMe) {
             const bool broke = nl::add_pressure(e.pressure, e.th.t);
             dbg("NL: pressure {}/{}{}", broke ? static_cast<int>(nl::cfg::BREAK_COUNT) : e.pressure.count,
                 static_cast<int>(nl::cfg::BREAK_COUNT), broke ? " - GUARD BREAK" : "");
@@ -585,6 +631,11 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
         if (dn->action == NA_PARRIED) {
             d.want = React::None;     // no guard, no dodge, no protection while it is open
             d.protect = false;
+        } else if (exposed) {
+            d.protect = false;        // open: your swing connects
+            if (inAttack || recovering) {
+                d.want = React::None;  // committed: it does not cancel into a guard
+            }
         }
     }
 

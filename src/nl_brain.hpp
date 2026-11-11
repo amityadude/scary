@@ -49,14 +49,16 @@ inline constexpr float ACCEL_DOWN = 16.0f;
 inline constexpr float SPACING_OUTER = 330.0f;     // outside: full speed
 inline constexpr float SPACING_INNER = 200.0f;     // between inner and outer: hold lunge distance
 inline constexpr float ATTACK_RANGE = 390.0f;
-inline constexpr int TURN_STEP = 0x1500;           // max turn per frame while chasing
-inline constexpr int GUARD_TURN_STEP = 0x2400;     // max turn per frame while shielding
+inline constexpr int TURN_STEP = 0x1000;           // max turn per frame while chasing from a distance
+inline constexpr int CLOSE_TURN_STEP = 0x0700;     // ...and when it is on top of you (circle it to get behind)
+inline constexpr float CLOSE_RANGE = 350.0f;
+inline constexpr int GUARD_TURN_STEP = 0x0700;     // max turn per frame while shielding / dodging
 inline constexpr float LEAD_MAX_FRAMES = 7.0f;     // how far ahead of you it aims its run
-inline constexpr int ATTACK_CD_MIN = 3;            // frames between attacks (random in this range)
-inline constexpr int ATTACK_CD_MAX = 8;
-inline constexpr float RIPOSTE_CHANCE = 0.85f;     // counter-attack right after a block
-inline constexpr float DODGE_RIPOSTE_CHANCE = 0.80f;
-inline constexpr float ATTACK_SPEED_MULT = 1.3f;   // its attack animations play this much faster
+inline constexpr int ATTACK_CD_MIN = 10;           // frames between attacks (random in this range)
+inline constexpr int ATTACK_CD_MAX = 22;
+inline constexpr float RIPOSTE_CHANCE = 0.55f;     // counter-attack right after a block
+inline constexpr float DODGE_RIPOSTE_CHANCE = 0.50f;
+inline constexpr float ATTACK_SPEED_MULT = 1.1f;   // its attack animations play this much faster (1.0 = original)
 inline constexpr int WEAVE_AMPL = 0x1500;          // zig-zag while you aim a bow at it
 inline constexpr float WEAVE_RATE = 0.5f;
 inline constexpr int STUCK_FRAMES = 18;            // blocked by a wall this long -> hop over it
@@ -74,6 +76,26 @@ inline constexpr float ADVANCE_STOP = 220.0f;
 inline constexpr int MIN_GUARD_HOLD = 4;
 inline constexpr int GUARD_MAX_HOLD = 150;
 
+// --- Openings: how you earn free hits without a parry ---
+// These make the fight a rhythm instead of a wall. While any of them is active the body is NOT
+// protected and it does not react to your swings.
+//  * Attacking: once an attack's strike frame is reached it is committed - no guard, no cancel.
+//    (During the wind-up it still guards, so you cannot simply hit it out of its attack.)
+//  * Recovery: after an attack, a dodge, or a leap landing, it is open for a short moment.
+//  * Behind: your swings are not blocked if you are behind it (it turns slowly up close).
+#ifdef NL_TEST_NO_OPENINGS
+inline constexpr bool OPENINGS = false;  // offline tests of the always-protected defense only
+#else
+inline constexpr bool OPENINGS = true;
+#endif
+inline constexpr float COMMIT_FRAME_ATTACK_0 = 20.0f;  // animation frames, a little before each strike lands
+inline constexpr float COMMIT_FRAME_ATTACK = 11.0f;
+inline constexpr float COMMIT_FRAME_TAIL = 31.0f;
+inline constexpr int ATTACK_RECOVERY = 16;
+inline constexpr int DODGE_RECOVERY = 14;
+inline constexpr int LEAP_RECOVERY = 20;
+inline constexpr int BEHIND_ANGLE = 0x4000;        // 90 degrees: more than this off its facing = behind it
+
 // --- Parry window (like the Darknut) ---
 // If its attack hits your shield, or you shield-bash it while it attacks, it recoils and is
 // fully hittable for this many frames. No protection, no guard, nothing - go punish it.
@@ -86,8 +108,8 @@ inline constexpr float PARRY_RECOIL_SPEED = -3.0f;   // small step back: it must
 // Every attack of yours that it successfully blocks or dodges adds one. If BREAK_COUNT of them land
 // inside BREAK_WINDOW frames, its guard cracks: same open window as a parry, and the swing that
 // cracked it connects. Back off for a moment and the older ones expire - no free bar to farm.
-inline constexpr int BREAK_COUNT = 6;
-inline constexpr int BREAK_WINDOW = 120;           // 4 seconds
+inline constexpr int BREAK_COUNT = 4;              // a full sword combo plus one
+inline constexpr int BREAK_WINDOW = 150;           // 5 seconds
 inline constexpr int BREAK_FRAMES = 30;            // how long it stays open once broken
 inline constexpr int BREAK_COOLDOWN = 75;          // after the open window, before it can be broken again
 inline constexpr float PRESSURE_RANGE = 450.0f;    // swings only count when you are this close
