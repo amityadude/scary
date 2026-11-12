@@ -64,7 +64,7 @@ enum : s16 {
 };
 // Our own action ids. The original switch has no case for them, so the original AI does nothing
 // while we are in one - but it still runs damage checks, physics and collision every frame.
-enum : s16 { NA_GUARD = 100, NA_DODGE = 101, NA_PURSUE = 102, NA_PARRIED = 103 };
+enum : s16 { NA_GUARD = 100, NA_DODGE = 101, NA_PURSUE = 102, NA_PARRIED = 103, NA_HOP = 104 };
 
 enum : int { ANM_GUARD = 0x16, ANM_JUMP_B = 0x1C, ANM_RUN = 0x1E, ANM_WAIT_01 = 0x1F };
 
@@ -121,6 +121,8 @@ struct Ext {
     float nudgeX = 0.0f;  // extra movement applied after the original AI runs
     float nudgeZ = 0.0f;
     int leapCd = 0;
+    int hopCd = 0;
+    int hopKind = 0;  // 1 = forward hop, 2 = side hop
     int stuck = 0;
     int parryT = 0;   // frames left in the open window (parry or guard break)
     int parryLen = nl::cfg::PARRY_FRAMES;  // how long the next window lasts
@@ -142,6 +144,11 @@ unsigned g_tick = 0;
 nl::Rng g_rng;
 int g_logCount = 0;
 bool g_haveGake = false;
+#ifdef NL_SIM_TEST
+bool g_noHops = false;  // the offline simulation switches hops off in scenarios that need fixed geometry
+#else
+constexpr bool g_noHops = false;
+#endif
 
 template <class... A>
 void dbg(fmt::format_string<A...> f, A&&... a) {
@@ -422,6 +429,45 @@ void run_dodge(const Ctx& c) {
     }
 }
 
+// A short, purposeful hop: forward to close a mid-range gap, or sideways to change angle while it
+// waits for its next attack. Either one usually flows straight into an attack on landing.
+void run_hop(const Ctx& c) {
+    e_dn_class* dn = c.dn;
+    Ext& e = *c.e;
+    if (dn->mode == 0) {
+        int16_t dir = c.toLink;
+        float speed = nl::cfg::HOP_SPEED;
+        if (e.hopKind == 2) {
+            dir = static_cast<int16_t>(c.toLink + ((g_rng.next() & 1u) ? 0x4000 : -0x4000));
+            speed *= 0.6f;
+        }
+        e.dodgeVX = fsin(dir) * speed;
+        e.dodgeVZ = fcos(dir) * speed;
+        dn->actor.speed.y = nl::cfg::HOP_HEIGHT;
+        play_anim(dn, ANM_JUMP_B, J3DFrameCtrl::EMode_NONE, 1.0f, 1.0f);
+        dn->mode = 1;
+        e.stateT = 0;
+    }
+    ++e.stateT;
+    dn->actor.current.angle.y =
+        nl::chase_angle(static_cast<int16_t>(dn->actor.current.angle.y), c.toLink, 1, nl::cfg::GUARD_TURN_STEP);
+    dn->actor.speedF = 0.0f;  // the hop itself is a position nudge applied after the original runs
+    if (e.stateT <= nl::cfg::HOP_FRAMES) {
+        const float k = 1.0f - 0.4f * (static_cast<float>(e.stateT) / static_cast<float>(nl::cfg::HOP_FRAMES));
+        e.nudgeX = e.dodgeVX * k;
+        e.nudgeZ = e.dodgeVZ * k;
+    }
+    const bool landed = dn->objacch.ChkGroundHit() != 0;
+    if (e.stateT >= nl::cfg::HOP_FRAMES && (landed || e.stateT >= nl::cfg::HOP_FRAMES + 8)) {
+        e.hopKind = 0;
+        if (c.dist < nl::cfg::ATTACK_RANGE && g_rng.unit() < nl::cfg::HOP_ATTACK_CHANCE) {
+            start_attack(c, false);
+        } else {
+            go_pursue(c);
+        }
+    }
+}
+
 void run_pursue(const Ctx& c) {
     e_dn_class* dn = c.dn;
     Ext& e = *c.e;
@@ -439,6 +485,9 @@ void run_pursue(const Ctx& c) {
     ++e.stateT;
     if (e.leapCd > 0) {
         --e.leapCd;
+    }
+    if (e.hopCd > 0) {
+        --e.hopCd;
     }
 
     // Aim where you WILL be, not where you are.
@@ -504,10 +553,31 @@ void run_pursue(const Ctx& c) {
         return;
     }
 
+    // Hops: close a mid-range gap, or hop to a new angle before attacking. They take priority over the
+    // attack decision below, and usually flow straight into an attack on landing.
+    if (!g_noHops && dn->action == NA_PURSUE && !recovering && e.hopCd == 0 && dn->objacch.ChkGroundHit() != 0) {
+        int kind = 0;
+        if (c.dist > nl::cfg::HOP_FWD_MIN && c.dist < nl::cfg::HOP_FWD_MAX && g_rng.unit() < nl::cfg::HOP_FWD_CHANCE) {
+            kind = 1;
+        } else if (c.dist < nl::cfg::CLOSE_RANGE && g_rng.unit() < nl::cfg::HOP_SIDE_CHANCE) {
+            kind = 2;
+        }
+        if (kind == 1 && g_haveGake && LizGake::g_orig(dn, 220.0f, 0) != 0) {
+            kind = 0;  // ledge ahead: do not hop off it
+        }
+        if (kind != 0) {
+            e.hopKind = kind;
+            e.hopCd = kind == 1 ? nl::cfg::HOP_FWD_COOLDOWN : nl::cfg::HOP_SIDE_COOLDOWN;
+            dn->action = NA_HOP;
+            dn->mode = 0;
+            e.stateT = 0;
+        }
+    }
+
     // Attack as soon as it is in range, facing you, and off cooldown. Holding your own shield
     // up for a long time earns you the tail sweep.
     const bool facing = nl::abs_angle(nl::angle_diff(c.toLink, static_cast<int16_t>(dn->actor.shape_angle.y))) < 0x3800;
-    if (!recovering && c.dist < nl::cfg::ATTACK_RANGE && facing && dn->timer[2] == 0) {
+    if (dn->action == NA_PURSUE && !recovering && c.dist < nl::cfg::ATTACK_RANGE && facing && dn->timer[2] == 0) {
         start_attack(c, e.th.linkGuardFrames > nl::cfg::TURTLE_FRAMES);
     }
 }
@@ -661,7 +731,7 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
 
         // React to the attack (interrupts attacks and the chase, never a leap or a knockback).
         if (d.want == React::Dodge) {
-            if (dn->action != NA_DODGE) {
+            if (dn->action != NA_DODGE && dn->action != NA_HOP) {
                 if (e.instDodged != e.th.instanceId) {
                     e.instDodged = e.th.instanceId;
                     dn->action = NA_DODGE;
@@ -672,7 +742,7 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
                 }
             }
         } else if (d.want == React::Block) {
-            if (dn->action != NA_GUARD && dn->action != NA_DODGE) {
+            if (dn->action != NA_GUARD && dn->action != NA_DODGE && dn->action != NA_HOP) {
                 enter_guard(c, React::Block);
             }
         } else if (d.want == React::Aim && dist < nl::cfg::AIM_SHIELD_RANGE) {
@@ -691,6 +761,9 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
             break;
         case NA_PURSUE:
             run_pursue(c);
+            break;
+        case NA_HOP:
+            run_hop(c);
             break;
         case NA_PARRIED:
             run_parried(c);
@@ -712,7 +785,7 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
 
     if (dn->action != e.lastLoggedAction) {
         if (dn->action >= NA_GUARD) {
-            dbg("NL: state -> {}", dn->action == NA_GUARD ? "GUARD" : (dn->action == NA_DODGE ? "DODGE" : (dn->action == NA_PARRIED ? "PARRIED" : "PURSUE")));
+            dbg("NL: state -> {}", dn->action == NA_GUARD ? "GUARD" : (dn->action == NA_DODGE ? "DODGE" : (dn->action == NA_PARRIED ? "PARRIED" : (dn->action == NA_HOP ? "HOP" : "PURSUE"))));
         }
         e.lastLoggedAction = dn->action;
     }
