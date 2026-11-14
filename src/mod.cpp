@@ -889,8 +889,10 @@ void on_action_post(ModContext*, void* args, void*, void*) {
             const float skip = a == A_ATTACK_0 ? nl::cfg::WINDUP_SKIP_ATTACK_0
                                : a == A_ATTACK ? nl::cfg::WINDUP_SKIP_ATTACK
                                                : nl::cfg::WINDUP_SKIP_TAIL;
-            dn->anm_p->setFrame(skip);
+            // Restart the attack animation a few frames in. (Done by re-issuing setAnm with a start frame:
+            // J3DFrameCtrl::setFrame is not in the link stubs of the Windows/macOS/Android builds.)
             e.atkBase = dn->anm_p->getPlaySpeed();
+            play_anim(dn, dn->anm_no, J3DFrameCtrl::EMode_NONE, a == A_TAIL_ATTACK ? 5.0f : 6.0f, e.atkBase, skip);
         }
         if (e.atkBase > 0.0f && dn->anm_p->getPlaySpeed() > 0.0f) {  // 0 = the original froze it (blocked)
             const float f = dn->anm_p->getFrame();
