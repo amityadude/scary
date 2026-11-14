@@ -42,23 +42,33 @@ inline constexpr float AGGRO_RANGE = 2200.0f;  // idle Lizalfos within this dist
 // --- Chasing / fighting ---
 inline constexpr float PURSUE_TAKEOVER = 1000.0f;  // inside this, the mod's close-combat AI drives
 inline constexpr float PURSUE_RELEASE = 1200.0f;   // outside this, the original run AI drives again
-inline constexpr float RUN_SPEED = 54.0f;          // original dash speed is 40
-inline constexpr float FAR_RUN_BONUS = 10.0f;      // extra distance per frame while the original AI runs
+inline constexpr float RUN_SPEED = 60.0f;          // original dash speed is 40
+inline constexpr float FAR_RUN_BONUS = 14.0f;      // extra distance per frame while the original AI runs
 inline constexpr float ACCEL_UP = 18.0f;
 inline constexpr float ACCEL_DOWN = 22.0f;
 inline constexpr float SPACING_OUTER = 330.0f;     // outside: full speed
 inline constexpr float SPACING_INNER = 200.0f;     // between inner and outer: hold lunge distance
-inline constexpr float ATTACK_RANGE = 390.0f;
-inline constexpr int TURN_STEP = 0x1500;           // max turn per frame while chasing from a distance
-inline constexpr int CLOSE_TURN_STEP = 0x0900;     // ...and when it is on top of you (circle it to get behind)
+inline constexpr float ATTACK_RANGE = 420.0f;
+inline constexpr int TURN_STEP = 0x1800;           // max turn per frame while chasing from a distance
+inline constexpr int CLOSE_TURN_STEP = 0x0C00;     // ...and when it is on top of you (circle it to get behind)
 inline constexpr float CLOSE_RANGE = 350.0f;
-inline constexpr int GUARD_TURN_STEP = 0x0900;     // max turn per frame while shielding / dodging
+inline constexpr int GUARD_TURN_STEP = 0x0C00;     // max turn per frame while shielding / dodging
 inline constexpr float LEAD_MAX_FRAMES = 7.0f;     // how far ahead of you it aims its run
-inline constexpr int ATTACK_CD_MIN = 4;           // frames between attacks (random in this range)
-inline constexpr int ATTACK_CD_MAX = 10;
+inline constexpr int ATTACK_CD_MIN = 2;           // frames between attacks (random in this range)
+inline constexpr int ATTACK_CD_MAX = 6;
 inline constexpr float RIPOSTE_CHANCE = 0.80f;     // counter-attack right after a block
 inline constexpr float DODGE_RIPOSTE_CHANCE = 0.70f;
-inline constexpr float ATTACK_SPEED_MULT = 1.35f;   // its attack animations play this much faster (1.0 = original)
+// Attack speed: only the WIND-UP is sped up (and partly skipped). The strike itself plays at the
+// original speed: the original moves it forward a fixed step per frame during the strike, so a faster
+// strike would cover less ground and have a shorter hit window - it would hit LESS, not faster.
+inline constexpr float WINDUP_MULT = 1.8f;
+inline constexpr float FOLLOW_MULT = 1.25f;          // the follow-through after the strike
+inline constexpr float WINDUP_SKIP_ATTACK_0 = 5.0f;  // animation frames skipped at the start of each attack
+inline constexpr float WINDUP_SKIP_ATTACK = 2.0f;
+inline constexpr float WINDUP_SKIP_TAIL = 8.0f;
+inline constexpr float STRIKE_END_ATTACK_0 = 29.0f;  // first frame after each attack's strike
+inline constexpr float STRIKE_END_ATTACK = 32.0f;
+inline constexpr float STRIKE_END_TAIL = 42.0f;
 inline constexpr int WEAVE_AMPL = 0x1500;          // zig-zag while you aim a bow at it
 inline constexpr float WEAVE_RATE = 0.5f;
 inline constexpr int STUCK_FRAMES = 18;            // blocked by a wall this long -> hop over it
@@ -69,6 +79,12 @@ inline constexpr float LEAP_MAX = 1000.0f;
 inline constexpr float LEAP_CHANCE = 0.12f;        // per frame while you stay in leap range
 inline constexpr int LEAP_COOLDOWN = 40;
 
+// --- Reacting to your attacks ---
+inline constexpr float DODGE_ON_SLASH_CHANCE = 0.30f;  // an ordinary swing at close range is sometimes dodged, not blocked
+inline constexpr int DODGE_COOLDOWN = 30;
+inline constexpr float CHARGE_PUNISH_CHANCE = 0.70f;   // you charge a spin / jump strike next to it: it hits you mid-charge
+inline constexpr int CHARGE_COOLDOWN = 60;
+
 // --- Hops: short, purposeful jumps (the big leap above is for long gaps) ---
 // Forward hop: closes a mid-range gap faster than running and flows straight into an attack.
 // Side hop: before many of its attacks it hops to a new angle on you, then attacks from there.
@@ -76,7 +92,7 @@ inline constexpr float HOP_FWD_MIN = 360.0f;
 inline constexpr float HOP_FWD_MAX = 640.0f;
 inline constexpr float HOP_FWD_CHANCE = 0.10f;     // per frame while you are in that range
 inline constexpr int HOP_FWD_COOLDOWN = 35;
-inline constexpr float HOP_SIDE_CHANCE = 0.30f;    // per frame while it is close and could attack: often hops first
+inline constexpr float HOP_SIDE_CHANCE = 0.22f;    // per frame while it is close and could attack: often hops first
 inline constexpr int HOP_SIDE_COOLDOWN = 25;
 inline constexpr float HOP_ATTACK_CHANCE = 0.85f;  // attack the moment it lands
 inline constexpr int HOP_FRAMES = 7;
@@ -87,7 +103,7 @@ inline constexpr float HOP_HEIGHT = 14.0f;
 inline constexpr float AIM_SHIELD_RANGE = 1300.0f; // raise the shield pose when you aim at it from inside this
 inline constexpr float ADVANCE_SPEED = 36.0f;      // shield-up advance while you aim at it
 inline constexpr float ADVANCE_STOP = 220.0f;
-inline constexpr int MIN_GUARD_HOLD = 2;
+inline constexpr int MIN_GUARD_HOLD = 1;
 inline constexpr int GUARD_MAX_HOLD = 150;
 
 // --- Openings: how you earn free hits without a parry ---
@@ -105,10 +121,10 @@ inline constexpr bool OPENINGS = true;
 inline constexpr float COMMIT_FRAME_ATTACK_0 = 20.0f;  // animation frames, a little before each strike lands
 inline constexpr float COMMIT_FRAME_ATTACK = 11.0f;
 inline constexpr float COMMIT_FRAME_TAIL = 31.0f;
-inline constexpr int ATTACK_RECOVERY = 10;
+inline constexpr int ATTACK_RECOVERY = 8;
 inline constexpr int DODGE_RECOVERY = 8;
 inline constexpr int LEAP_RECOVERY = 12;
-inline constexpr int BEHIND_ANGLE = 0x3400;        // ~73 degrees: more than this off its facing = behind it
+inline constexpr int BEHIND_ANGLE = 0x2C00;        // ~62 degrees: more than this off its facing = behind it
 
 // --- Parry window (like the Darknut) ---
 // If its attack hits your shield, or you shield-bash it while it attacks, it recoils and is
@@ -129,8 +145,8 @@ inline constexpr int BREAK_COOLDOWN = 75;          // after the open window, bef
 inline constexpr float PRESSURE_RANGE = 450.0f;    // swings only count when you are this close
 
 // --- Dodge ---
-inline constexpr int DODGE_FRAMES = 7;
-inline constexpr float DODGE_SPEED = 42.0f;
+inline constexpr int DODGE_FRAMES = 6;
+inline constexpr float DODGE_SPEED = 46.0f;
 inline constexpr float DODGE_HOP = 15.0f;
 
 // Hit bits the original AI "learns" (guards against). Bombs (0x10000000) are left out on
@@ -359,6 +375,7 @@ struct LinkView {
     bool aiming = false;      // bow / slingshot / hookshot / boomerang ready
     bool shooting = false;    // arrow / hook just released
     bool guarding = false;    // you are holding your shield up
+    bool charging = false;    // you are charging a spin attack or jump strike
 };
 
 struct Obs {

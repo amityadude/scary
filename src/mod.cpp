@@ -122,6 +122,9 @@ struct Ext {
     float nudgeZ = 0.0f;
     int leapCd = 0;
     int hopCd = 0;
+    int dodgeCd = 0;
+    int chargeCd = 0;
+    float atkBase = 0.0f;  // the original's play speed for the attack it is in (0 = not attacking)
     int hopKind = 0;  // 1 = forward hop, 2 = side hop
     int stuck = 0;
     int parryT = 0;   // frames left in the open window (parry or guard break)
@@ -203,6 +206,7 @@ bool read_link(LinkInfo& out) {
     out.v.cut = py->getCutType();
     out.v.cutAt = py->getCutAtFlg() != 0;
     out.v.guarding = py->checkPlayerGuard() != 0;
+    out.v.charging = py->checkCutTurnCharge() != 0 || py->checkCutLargeJumpCharge() != 0;
     out.v.aiming = false;
     out.v.shooting = false;
     // The bow / hookshot / boomerang animation checks compare animation ids that only mean
@@ -654,6 +658,12 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
         if (e.parryCd > 0) {
             --e.parryCd;
         }
+        if (e.dodgeCd > 0) {
+            --e.dodgeCd;
+        }
+        if (e.chargeCd > 0) {
+            --e.chargeCd;
+        }
         // Openings: recovery after an attack, a dodge, or a leap landing.
         if (nl::cfg::OPENINGS) {
             if (e.recoverT > 0) {
@@ -729,7 +739,16 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
             dn->unk_timer_1 = 40;  // never give up the chase
         }
 
-        // React to the attack (interrupts attacks and the chase, never a leap or a knockback).
+        // You are charging a spin / jump strike right next to it: that leaves you open, so it hits you now.
+    if (steer && L.v.charging && e.chargeCd == 0 && dn->action == NA_PURSUE && d.want == React::None &&
+        !(nl::cfg::OPENINGS && e.recoverT > 0) && dist < nl::cfg::ATTACK_RANGE + 80.0f &&
+        g_rng.unit() < nl::cfg::CHARGE_PUNISH_CHANCE) {
+        e.chargeCd = nl::cfg::CHARGE_COOLDOWN;
+        start_attack(c, false);
+        dbg("NL: you are charging - it attacks");
+    }
+
+    // React to the attack (interrupts attacks and the chase, never a leap or a knockback).
         if (d.want == React::Dodge) {
             if (dn->action != NA_DODGE && dn->action != NA_HOP) {
                 if (e.instDodged != e.th.instanceId) {
@@ -742,7 +761,16 @@ HookAction on_action_pre(ModContext*, void* args, void*, void*) {
                 }
             }
         } else if (d.want == React::Block) {
-            if (dn->action != NA_GUARD && dn->action != NA_DODGE && dn->action != NA_HOP) {
+            if (nl::cfg::OPENINGS && e.th.newInstance && e.dodgeCd == 0 &&
+                (dn->action == NA_PURSUE || dn->action == A_FIGHT_RUN) && dist < nl::cfg::CLOSE_RANGE &&
+                g_rng.unit() < nl::cfg::DODGE_ON_SLASH_CHANCE) {
+                // Reads your swing and gets out of the way instead of just standing behind the shield.
+                e.instDodged = e.th.instanceId;
+                e.dodgeCd = nl::cfg::DODGE_COOLDOWN;
+                dn->action = NA_DODGE;
+                dn->mode = 0;
+                e.stateT = 0;
+            } else if (dn->action != NA_GUARD && dn->action != NA_DODGE && dn->action != NA_HOP) {
                 enter_guard(c, React::Block);
             }
         } else if (d.want == React::Aim && dist < nl::cfg::AIM_SHIELD_RANGE) {
@@ -854,9 +882,29 @@ void on_action_post(ModContext*, void* args, void*, void*) {
         dn->actor.current.pos.z += fcos(ang) * nl::cfg::FAR_RUN_BONUS;
     }
 
-    // Faster attack animations (applied once, when the attack starts).
-    if (is_attack(a) && e.preAction != a) {
-        dn->anm_p->setPlaySpeed(dn->anm_p->getPlaySpeed() * nl::cfg::ATTACK_SPEED_MULT);
+    // Faster attacks: skip part of the wind-up and play the rest of it faster, but keep the strike itself
+    // at the original speed (it lunges a fixed step per frame, so a faster strike would reach less).
+    if (is_attack(a) && dn->mode >= 1) {
+        if (e.preAction != a) {  // the attack just began this frame
+            const float skip = a == A_ATTACK_0 ? nl::cfg::WINDUP_SKIP_ATTACK_0
+                               : a == A_ATTACK ? nl::cfg::WINDUP_SKIP_ATTACK
+                                               : nl::cfg::WINDUP_SKIP_TAIL;
+            dn->anm_p->setFrame(skip);
+            e.atkBase = dn->anm_p->getPlaySpeed();
+        }
+        if (e.atkBase > 0.0f && dn->anm_p->getPlaySpeed() > 0.0f) {  // 0 = the original froze it (blocked)
+            const float f = dn->anm_p->getFrame();
+            const float strikeStart = a == A_ATTACK_0 ? nl::cfg::COMMIT_FRAME_ATTACK_0
+                                      : a == A_ATTACK ? nl::cfg::COMMIT_FRAME_ATTACK
+                                                      : nl::cfg::COMMIT_FRAME_TAIL;
+            const float strikeEnd = a == A_ATTACK_0 ? nl::cfg::STRIKE_END_ATTACK_0
+                                    : a == A_ATTACK ? nl::cfg::STRIKE_END_ATTACK
+                                                    : nl::cfg::STRIKE_END_TAIL;
+            const float mult = f < strikeStart ? nl::cfg::WINDUP_MULT : (f >= strikeEnd ? nl::cfg::FOLLOW_MULT : 1.0f);
+            dn->anm_p->setPlaySpeed(e.atkBase * mult);
+        }
+    } else {
+        e.atkBase = 0.0f;
     }
 }
 
